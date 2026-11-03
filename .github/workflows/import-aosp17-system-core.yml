@@ -40,6 +40,37 @@ jobs:
           test "$tree" = "$EXPECTED_TREE" || { echo "Unexpected source tree"; exit 1; }
           git -C "$work" fsck --connectivity-only --no-reflogs
           echo "Official AOSP17 system/core verified: $commit, tree $tree"
+          # GitHub rejects a 219 MB blob reachable from ancient AOSP history.
+          # A single root snapshot preserves the exact current AOSP17 tree
+          # without publishing irrelevant legacy history or changing any file.
+          oversized="$(git -C "$work" ls-tree -r -l "$EXPECTED_COMMIT" |
+            awk '$2 == "blob" && $4 ~ /^[0-9]+$/ && $4 > 100000000 {print}')"
+          if [[ -n "$oversized" ]]; then
+            echo "Current AOSP17 tree has a >100MB file; refuse to strip it:"
+            echo "$oversized"
+            exit 1
+          fi
+          {
+            echo "Import official AOSP 17 system/core source snapshot"
+            echo
+            echo "Exact upstream source tree (not rewritten): $EXPECTED_TREE"
+            echo "Upstream commit: $EXPECTED_COMMIT"
+            echo "Upstream tag: android-17.0.0_r1"
+            echo "Upstream: $AOSP_URL"
+            echo
+            echo "Full Git history cannot be pushed to GitHub: an unrelated"
+            echo "historical AOSP blob exceeds GitHub's 100MB limit."
+            echo "This parentless snapshot preserves the current AOSP source"
+            echo "files. PixelExperience historical commits remain on seventeen."
+          } > "$RUNNER_TEMP/import-message.txt"
+          snapshot="$(GIT_AUTHOR_NAME='github-actions[bot]' \
+            GIT_AUTHOR_EMAIL='41898282+github-actions[bot]@users.noreply.github.com' \
+            GIT_COMMITTER_NAME='github-actions[bot]' \
+            GIT_COMMITTER_EMAIL='41898282+github-actions[bot]@users.noreply.github.com' \
+            git -C "$work" commit-tree "$EXPECTED_TREE" -F "$RUNNER_TEMP/import-message.txt")"
+          test "$(git -C "$work" rev-parse "$snapshot^{tree}")" = "$EXPECTED_TREE"
+          echo "SNAPSHOT_COMMIT=$snapshot" >> "$GITHUB_ENV"
+          echo "Verified exact AOSP17 tree in snapshot $snapshot"
 
       - name: Publish new AOSP17 source branch without changing seventeen
         shell: bash
@@ -51,12 +82,12 @@ jobs:
           ref="refs/heads/$OUTPUT_BRANCH"
           current="$(git ls-remote "$destination" "$ref" | cut -f1)"
           if [[ -n "$current" ]]; then
-            test "$current" = "$EXPECTED_COMMIT" || { echo "Ref exists with different commit"; exit 1; }
+            test "$current" = "$SNAPSHOT_COMMIT" || { echo "Ref exists with a different commit; refusing to overwrite"; exit 1; }
             echo "Already published, nothing to change"
             exit 0
           fi
           auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           git -C "$RUNNER_TEMP/aosp-system-core" \
             -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
-            push --no-thin "$destination" "$EXPECTED_COMMIT:$ref"
+            push --no-thin "$destination" "$SNAPSHOT_COMMIT:$ref"
           echo "Published pinned AOSP17 system/core branch"
