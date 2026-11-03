@@ -1,0 +1,62 @@
+name: Import pinned official AOSP 17 system/core source
+
+on:
+  push:
+    branches:
+      - ci/a17-system-core-import-20261103
+    paths:
+      - .github/workflows/import-aosp17-system-core.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: aosp17-system-core-import
+  cancel-in-progress: false
+
+jobs:
+  source-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      AOSP_URL: https://android.googlesource.com/platform/system/core
+      AOSP_REF: refs/tags/android-17.0.0_r1
+      EXPECTED_COMMIT: 545d2487e38192a2ce25040897ced877cf6b4f53
+      EXPECTED_TREE: 332cc42dfc29e8660d45b2c27ddc7c2ad4925868
+      OUTPUT_BRANCH: port/a17-system-core-aosp17-base-20261103
+    steps:
+      - name: Fetch and verify official source history
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/aosp-system-core"
+          mkdir -p "$work"
+          git -C "$work" init -q
+          git -C "$work" remote add official "$AOSP_URL"
+          git -C "$work" fetch --no-tags official "$AOSP_REF"
+          commit="$(git -C "$work" rev-parse 'FETCH_HEAD^{commit}')"
+          tree="$(git -C "$work" rev-parse "$commit^{tree}")"
+          test "$commit" = "$EXPECTED_COMMIT" || { echo "Unexpected source commit"; exit 1; }
+          test "$tree" = "$EXPECTED_TREE" || { echo "Unexpected source tree"; exit 1; }
+          git -C "$work" fsck --connectivity-only --no-reflogs
+          echo "Official AOSP17 system/core verified: $commit, tree $tree"
+
+      - name: Publish new AOSP17 source branch without changing seventeen
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          destination="https://github.com/$GITHUB_REPOSITORY.git"
+          ref="refs/heads/$OUTPUT_BRANCH"
+          current="$(git ls-remote "$destination" "$ref" | cut -f1)"
+          if [[ -n "$current" ]]; then
+            test "$current" = "$EXPECTED_COMMIT" || { echo "Ref exists with different commit"; exit 1; }
+            echo "Already published, nothing to change"
+            exit 0
+          fi
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -C "$RUNNER_TEMP/aosp-system-core" \
+            -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            push --no-thin "$destination" "$EXPECTED_COMMIT:$ref"
+          echo "Published pinned AOSP17 system/core branch"
